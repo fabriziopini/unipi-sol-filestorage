@@ -10,9 +10,13 @@
 #include <sys/socket.h>
 #include <sys/un.h> /* ind AF_UNIX */
 #include <ctype.h>
+#include <fcntl.h>
 
 // nell'esercizio 8, testQueue.c le era scritto <queue.h>
 #include "queue.h" // definisce il tipo Queue_t
+//#include <message.h> // TODO: devo mettere tutto in common_def?
+#include "common_def.h"
+#include "common_funcs.h"
 
 #define UNIX_PATH_MAX 104 
 #define SOCKNAME "./mysock"
@@ -26,60 +30,76 @@ typedef struct threadArgs
     Queue_t *q;
 } threadArgs_t;
 
+
 // ritorna max fd attivo
 int aggiorna(fd_set *set, int fd_num);
 
 
-// funzione eseguita dal thread consumatore
+// funzione eseguita dal thread worker
 void *Worker(void *arg) {
     Queue_t *q = ((threadArgs_t *)arg)->q;
     int myid = ((threadArgs_t *)arg)->thid;
     int pfd_w = ((threadArgs_t *)arg)->pfd; //fd lettura pipe
 
     int nread; // numero caratteri letti
-    char buf[N]; // buffer messaggio
+    msg_request_t req; // messaggio richiesta dal client
+    msg_response_t res; // messaggio risposta al client
 
 
     size_t consumed = 0;
     while (1)
     {
-        int *fd;
+        int fd;
         fd = pop(q);
-        if (*fd == -1)
+        if (fd == -1)
         {
-            free(fd);
+            //TODO
             break;
         }
         ++consumed;
 
-        printf("Worker %d: estratto <%d>\n", myid, *fd);
+        printf("⛏ Worker %d: estratto <%d>\n", myid, fd);
         fflush(stdout);
         
-        nread = read(*fd,buf,N);
-        if (nread==0) {/* EOF client finito */
-            printf("Worker %d, chiudo:%d\n", myid, *fd);
+        nread = readn(fd, &req, sizeof(msg_request_t)); //TODO cambiare in readn
+        if (nread == 0) {/* EOF client finito */
+            printf("⛔️ Worker %d, chiudo:%d\n", myid, fd);
             fflush(stdout);
 
-            close(*fd);
-        }
-        else { /* nread !=0 */
-            printf("Workers %d, Server got: %s, from %d\n", myid, buf, *fd);
+            close(fd);
+        } else if (nread != sizeof(msg_request_t)) {
+            // TODO gestione errore (lettura parziale)
+            printf("❌ ERRORE nread worker, lettura parziale\n");
             fflush(stdout);
+        } else { /* nread == sizeof(msg_request_t) */
 
-            write(*fd, buf, strlen(buf));
-            memset(buf, '\0', sizeof(buf));
+            // TODO: fare stampa più carina
+            printf("Workers %d, Server got: %d, from %d\n", myid, req.op, fd);
+            fflush(stdout);
+            //TODO: fare TUTTOOOOOOOO!!!!!!
+            // per ora rispondo ok al client, e non faccio nulla realmente
+            memset(&req, '\0', sizeof(req));
+
+            res.result = 0;
+            res.datalen = 0; //superfluo
+            if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
+                //TODO gestione errore
+                printf("writen worker errore\n");
+                fflush(stdout);
+            }
+            memset(&res, '\0', sizeof(res));
 
             //scrivo nella pipe in modo che manager riaggiunga fd al set
 
-            // TODO trasformare fd (intero) in stringa con terminatore (il terminatore c'è già con \0?? -> poi come lo leggo??)
-            int n = 20; //TODO per ora a caso
-            char text[n];
-            sprintf(text, "%d", *fd);
-            // char *text = "1 ";
-            int k = write(pfd_w, text, strlen(text)+1); //TODO controllo
-        }
-        
-        free(fd);
+            if (writen(pfd_w, &fd, sizeof(fd)) != sizeof(fd)) {
+                //TODO gestione errore
+                printf("❌ ERRORE writen worker, parziale\n");
+                fflush(stdout);
+            } else {
+                printf("📬 fd %d messo nella pipe\n", fd);
+                fflush(stdout);
+            }
+        }     
     }
 
     printf("Worker %d, consumed <%ld> messages, now it exits\n", myid, consumed);
@@ -89,7 +109,7 @@ void *Worker(void *arg) {
 
 void usage(char *pname)
 {
-    fprintf(stderr, "\nusa: %s -c <num-workers>\n\n", pname);
+    fprintf(stderr, "\nusa: %s -w <num-workers>\n\n", pname);
     exit(EXIT_FAILURE);
 }
 
@@ -157,6 +177,7 @@ int main(int argc, char *argv[])
     }
 
     int pfd_r = pfd[0]; //fd lettura pipe
+                            fcntl(pfd_r, F_SETFL, O_NONBLOCK);
 
     int fd_sk; // socket di connessione
     int fd_c; // socket di I/O con un client
@@ -219,61 +240,44 @@ int main(int argc, char *argv[])
                         printf("leggo dalla pipe\n");
                         fflush(stdout);
 
-                        int n = 100; // TODO per ora a caso
-                        char buf[n];
+                        int num; 
+                        int nread;
 
-                        int k = read(fd, buf, n); //TODO controllo
-                        printf("byte letti:%d\n", k);
-
-                        int i = 0;
-                        char *rest;
-                        while(i < k) {
-                            rest = &(buf[i]);
-                            //convertire token in un numero (che è il file descriptor)
-                            int num = atoi(rest);
-                            printf("fd:%d\n", num);
+                        while ((nread = readn(fd, &num, sizeof(num))) == sizeof(num)) {
+                            printf("Letto fd:%d dalla pipe\n", num);
                             fflush(stdout);
                             FD_SET(num, &set);
                             if (num > fd_num) fd_num = num;
-
-                            while(buf[i] != '\0') {
-                                i++;
-                            }
-                            i++; // punto all'inizio della prossima stringa
                         }
-
-                        // char* token;
-                        // char* rest = buf;
-  
-                        // while ((token = strtok_r(rest, " ", &rest))) {
-                        //     printf("%s\n", token);
-                        //     fflush(stdout);
-                        // // while (read(fd, buf, sizeof(buf)) > 0) {
-                        // //     printf("-----> %s\n", buf);
-                        // //     fflush(stdout);
-
+                        if (nread != 0) {
+                            //TODO gestione errore: c'era qualcosa di parziale
+                        }
                         
+                        printf("Non c'è più niente nella pipe\n");
+                        fflush(stdout);
+
+
                     } else {/* sock I/0 pronto */
-                        int *fd_queue = malloc(sizeof(int));
+                        // int *fd_queue = malloc(sizeof(int));
 
-                        if (fd_queue == NULL) {
-                            perror("Master fd_queue malloc fallita");
-                            pthread_exit(NULL);
-                        }
+                        // if (fd_queue == NULL) {
+                        //     perror("Master fd_queue malloc fallita");
+                        //     pthread_exit(NULL);
+                        // }
 
-                        *fd_queue = fd;
+                        // *fd_queue = fd;
 
-                        // tolgo fd
-                        FD_CLR(fd, &set);
-                        fd_num = aggiorna(&set, fd_num);
-
-                        if (push(q, fd_queue) == -1) {
+                        if (push(q, fd) == -1) {
                             fprintf(stderr, "Errore: push\n");
 
                             pthread_exit(NULL);
                         }
 
-                        printf("Master pushed <%d>\n", *fd_queue);
+                        // tolgo fd
+                        FD_CLR(fd, &set);
+                        fd_num = aggiorna(&set, fd_num);
+
+                        printf("Master pushed <%d>\n", fd);
                         fflush(stdout);
                     }
                 }
@@ -290,8 +294,7 @@ int main(int argc, char *argv[])
     // quindi termino tutti i worker
     for (int i = 0; i < w; ++i)
     {
-        int *eos = malloc(sizeof(int));
-        *eos = -1;
+        int eos = -1;
         push(q, eos);
     }
     // aspetto la terminazione di tutti i consumatori
