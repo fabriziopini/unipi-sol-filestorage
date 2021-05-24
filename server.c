@@ -14,13 +14,15 @@
 
 // nell'esercizio 8, testQueue.c le era scritto <queue.h>
 #include "queue.h" // definisce il tipo Queue_t
+#include "storageQueue.h"
 //#include <message.h> // TODO: devo mettere tutto in common_def?
 #include "common_def.h"
 #include "common_funcs.h"
+#include "config.h"
 
-#define UNIX_PATH_MAX 104 
-#define SOCKNAME "./mysock"
-#define N 100
+#define SOCKNAME "./mysock" 
+
+
 
 // tipo di dato usato per passare gli argomenti al thread
 typedef struct threadArgs
@@ -29,6 +31,162 @@ typedef struct threadArgs
     int thid;
     Queue_t *q;
 } threadArgs_t;
+
+
+
+//variabili globali :
+struct config_struct config;
+
+StorageQueue_t *storage_q;
+
+
+
+char* myStrerror (int e) {
+    if (e == 0) {
+        return "Eseguita correttamente";
+    } else return strerror(e);
+}
+
+int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, void **data) {
+    res->result = 0;
+    res->datalen = 0; //superfluo
+
+    switch(req.op) {
+        // TODO res->result non mi deve tornare -1! bensì il codice di errore (errno) -> MODIFICARE (faccio ritornare direttamente errno a ciascuna funzione?)
+        case OPENFILE: {
+            if (req.flag == O_CREATE) {
+                res->result = queue_s_push(storage_q, req.pathname, false, fd);
+                printf("Openfile_O_CREATE, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+
+            } else if (req.flag == O_CREATE_LOCK) {
+                res->result = queue_s_push(storage_q, req.pathname, true, fd);
+                printf("Openfile_O_CREATE_LOCK, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+
+            } else if (req.flag == O_LOCK) {
+                res->result = queue_s_updateOpeners(storage_q, req.pathname, true, fd);
+                printf("Openfile_O_LOCK, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+
+            } else if (req.flag == O_NULL) {
+                res->result = queue_s_updateOpeners(storage_q, req.pathname, false, fd);
+                printf("Openfile_O_NULL, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+
+            } else {
+                // flag non riconosciuto
+                printf("Openfile fd: %d, flag non riconosciuto\n", fd);
+                res->result = EINVAL;
+            }
+            
+        }
+        break;
+        case READFILE: {
+            res->result = queue_s_readFile(storage_q, req.pathname, fd, &(res->datalen), data);
+            printf("Readfile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            printf("Readfile, fd: %d, datalen: %d, buf: %s\n", fd, res->datalen, *data);
+
+        }
+        break;
+        case READNFILES: { //TODO
+            res->result = EPERM;
+            printf("ReadNfiles, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+        }
+        break;
+        case WRITEFILE: {
+            void *buf = malloc(req.datalen); //TODO controllo malloc
+            if (buf == NULL) {
+                fprintf(stderr, "fd: %d, malloc WriteToFile fallita\n", fd);
+                fflush(stdout);
+                res->result = ENOMEM;
+            }
+
+            int nread = readn(fd, buf, req.datalen);
+            if (nread == 0) {/* EOF client finito */
+                printf("⛔️ Worker %d, chiudo:%d\n", myid, fd);
+                fflush(stdout);
+
+                free(buf);
+
+                printf("Close fd:%d files, %s", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
+                close(fd);
+
+                return -1;
+            } else if (nread != req.datalen) {
+            // TODO gestione errore (lettura parziale)
+                fprintf(stderr, "❌ ERRORE nread worker, lettura parziale\n");
+                fflush(stderr);
+
+                free(buf);
+            } else {
+                res->result = queue_s_writeFile(storage_q, req.pathname, fd, buf, req.datalen);
+                printf("WriteToFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            }
+
+        }
+        break;
+        case APPENDTOFILE: {
+            void *buf = malloc(req.datalen); //TODO controllo malloc
+            if (buf == NULL) {
+                fprintf(stderr, "fd: %d, malloc appendToFile fallita\n", fd);
+                fflush(stdout);
+                res->result = ENOMEM;
+            }
+
+            int nread = readn(fd, buf, req.datalen);
+            if (nread == 0) {/* EOF client finito */
+                printf("⛔️ Worker %d, chiudo:%d\n", myid, fd);
+                fflush(stdout);
+
+                free(buf);
+
+                printf("Close fd:%d files, %s", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
+                close(fd);
+
+                return -1;
+            } else if (nread != req.datalen) {
+            // TODO gestione errore (lettura parziale)
+                fprintf(stderr, "❌ ERRORE nread worker, lettura parziale\n");
+                fflush(stderr);
+
+                free(buf);
+            } else {
+                res->result = queue_s_appendToFile(storage_q, req.pathname, fd, buf, req.datalen);
+                printf("AppendToFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                free(buf);
+            }
+
+        }
+        break;
+        case LOCKFILE: {
+           res->result = queue_s_lockFile(storage_q, req.pathname, fd);
+           printf("LockFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+        }
+        break;
+        case UNLOCKFILE: {
+            res->result = queue_s_lockFile(storage_q, req.pathname, fd);
+            printf("UnlockFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+        }
+        break;
+        case CLOSEFILE: {
+            res->result = queue_s_closeFile(storage_q, req.pathname, fd);
+            printf("CloseFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+        }
+        break;
+        case REMOVEFILE: {
+            res->result = queue_s_removeFile(storage_q, req.pathname, fd);
+            printf("RemoveFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+        }
+        break;
+        default: { // non dovrebbe succedere (api scritta male)
+            res->result = EPERM;
+            printf("Operazione richiesta da fd: %d non riconosciuta", fd);
+        }
+    }
+
+    fflush(stdout);
+    fflush(stderr);
+
+    return 0;
+}
+
 
 
 // ritorna max fd attivo
@@ -44,13 +202,14 @@ void *Worker(void *arg) {
     int nread; // numero caratteri letti
     msg_request_t req; // messaggio richiesta dal client
     msg_response_t res; // messaggio risposta al client
+    void *data = NULL;
 
 
     size_t consumed = 0;
     while (1)
     {
         int fd;
-        fd = pop(q);
+        fd = queue_pop(q);
         if (fd == -1)
         {
             //TODO
@@ -61,10 +220,12 @@ void *Worker(void *arg) {
         printf("⛏ Worker %d: estratto <%d>\n", myid, fd);
         fflush(stdout);
         
-        nread = readn(fd, &req, sizeof(msg_request_t)); //TODO cambiare in readn
+        nread = readn(fd, &req, sizeof(msg_request_t));
         if (nread == 0) {/* EOF client finito */
             printf("⛔️ Worker %d, chiudo:%d\n", myid, fd);
             fflush(stdout);
+
+            printf("Close fd: %d, files: %s\n", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
 
             close(fd);
         } else if (nread != sizeof(msg_request_t)) {
@@ -73,31 +234,40 @@ void *Worker(void *arg) {
             fflush(stdout);
         } else { /* nread == sizeof(msg_request_t) */
 
-            // TODO: fare stampa più carina
             printf("Workers %d, Server got: %d, from %d\n", myid, req.op, fd);
             fflush(stdout);
-            //TODO: fare TUTTOOOOOOOO!!!!!!
-            // per ora rispondo ok al client, e non faccio nulla realmente
-            memset(&req, '\0', sizeof(req));
 
-            res.result = 0;
-            res.datalen = 0; //superfluo
-            if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-                //TODO gestione errore
-                printf("writen worker errore\n");
-                fflush(stdout);
-            }
-            memset(&res, '\0', sizeof(res));
+            if (requestHandler(myid, fd, req, &res, &data) == 0) {
 
-            //scrivo nella pipe in modo che manager riaggiunga fd al set
+                memset(&req, '\0', sizeof(req));
 
-            if (writen(pfd_w, &fd, sizeof(fd)) != sizeof(fd)) {
-                //TODO gestione errore
-                printf("❌ ERRORE writen worker, parziale\n");
-                fflush(stdout);
-            } else {
-                printf("📬 fd %d messo nella pipe\n", fd);
-                fflush(stdout);
+                if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
+                    //TODO gestione errore
+                    printf("writen res worker errore\n");
+                    fflush(stdout);
+                }
+
+                if (res.datalen > 0) {
+                    if (writen(fd, data, res.datalen) != res.datalen) {
+                        //TODO gestione errore
+                        printf("writen data worker errore\n");
+                        fflush(stdout);
+                    }
+                }
+
+                memset(&res, '\0', sizeof(res));
+                data = NULL;
+
+                //scrivo nella pipe in modo che manager riaggiunga fd al set
+
+                if (writen(pfd_w, &fd, sizeof(fd)) != sizeof(fd)) {
+                    //TODO gestione errore
+                    printf("❌ ERRORE writen worker, parziale\n");
+                    fflush(stdout);
+                } else {
+                    printf("📬 fd %d messo nella pipe\n", fd);
+                    fflush(stdout);
+                }
             }
         }     
     }
@@ -107,50 +277,40 @@ void *Worker(void *arg) {
     return NULL;
 }
 
-void usage(char *pname)
-{
-    fprintf(stderr, "\nusa: %s -w <num-workers>\n\n", pname);
-    exit(EXIT_FAILURE);
-}
 
 int main(int argc, char *argv[])
 {
-    extern char *optarg;
-    int w = 0, opt;
     int pfd[2];
 
-    // parsing degli argomenti
-    while ((opt = getopt(argc, argv, "w:")) != -1)
-    {
-        switch (opt)
-        {
-        case 'w':
-            w = atoi(optarg);
-            break;
-        default:
-            usage(argv[0]);
-            break;
-        }
-    }
-    if (w == 0)
-        usage(argv[0]);
-    printf("num workers =%d\n", w);
+    //TODO read config
+    config.num_workers = 3;
+    strncpy(config.sockname, "./mysock", UNIX_PATH_MAX);
+    config.limit_num_files = 1;
+    config.storage_capacity = 100;
+
 
     pthread_t *th;
     threadArgs_t *thARGS;
 
-    th = malloc(w * sizeof(pthread_t)); // w workers
-    thARGS = malloc(w * sizeof(threadArgs_t));
+    th = malloc(config.num_workers * sizeof(pthread_t)); // w workers
+    thARGS = malloc(config.num_workers * sizeof(threadArgs_t));
     if (!th || !thARGS)
     {
         fprintf(stderr, "malloc fallita\n");
         exit(EXIT_FAILURE);
     }
 
-    Queue_t *q = initQueue();
+    Queue_t *q = queue_init();
     if (!q)
     {
         fprintf(stderr, "initQueue fallita\n");
+        exit(errno);
+    }
+
+    storage_q = queue_s_init(config.limit_num_files, config.storage_capacity);
+    if (!storage_q)
+    {
+        fprintf(stderr, "initQueue storage fallita\n");
         exit(errno);
     }
 
@@ -160,14 +320,14 @@ int main(int argc, char *argv[])
         exit(errno);
     }
 
-    for (int i = 0; i < w; ++i)
+    for (int i = 0; i < config.num_workers; ++i)
     { //passo ai consumatori thread_id, coda, descrittore in scrittura pipe
         thARGS[i].thid = i;
         thARGS[i].q = q;
         thARGS[i].pfd = pfd[1];
     }
 
-    for (int i = 0; i < w; ++i)
+    for (int i = 0; i < config.num_workers; ++i)
     {
         if (pthread_create(&th[i], NULL, Worker, &thARGS[i]) != 0)
         {
@@ -267,7 +427,7 @@ int main(int argc, char *argv[])
 
                         // *fd_queue = fd;
 
-                        if (push(q, fd) == -1) {
+                        if (queue_push(q, fd) == -1) {
                             fprintf(stderr, "Errore: push\n");
 
                             pthread_exit(NULL);
@@ -292,17 +452,17 @@ int main(int argc, char *argv[])
      * quindi si aspettano gli worker
      */
     // quindi termino tutti i worker
-    for (int i = 0; i < w; ++i)
+    for (int i = 0; i < config.num_workers; ++i)
     {
         int eos = -1;
-        push(q, eos);
+        queue_push(q, eos);
     }
     // aspetto la terminazione di tutti i consumatori
-    for (int i = 0; i < w; ++i)
+    for (int i = 0; i < config.num_workers; ++i)
         pthread_join(th[i], NULL);
 
     // libero memoria
-    deleteQueue(q);
+    queue_delete(q);
     free(th);
     free(thARGS);
     return 0;
