@@ -144,7 +144,7 @@ Node_t* queue_find(Queue_t *q, int fd) {
 
 int queue_deleteNode(Queue_t *q, int fd) {
     if (q == NULL) {
-        errno= EINVAL; 
+        errno = EINVAL; 
         return -1;
     }
 

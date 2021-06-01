@@ -42,52 +42,63 @@ StorageQueue_t *storage_q;
 
 
 char* myStrerror (int e) {
-    if (e == 0) {
-        return "Eseguita correttamente";
+    if (e == -1) {
+        return "Errore nella comunicazione con il client";
+    } else if (e == 0) {
+        return "Positivo";
     } else return strerror(e);
 }
 
-int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, void **data) {
-    res->result = 0;
-    res->datalen = 0; //superfluo
+int requestHandler (int myid, int fd, msg_request_t req) {
+    msg_response_t res;
+    res.result = 0;
+    res.datalen = 0; //superfluo
 
     switch(req.op) {
-        // TODO res->result non mi deve tornare -1! bensì il codice di errore (errno) -> MODIFICARE (faccio ritornare direttamente errno a ciascuna funzione?)
+        /** 
+         * res.result ==
+         *  • -1: non devo riaggiungere fd pipe set server
+         *  • 0: (ho già comunicato al client fd)
+         *  • >0: errore da comunicare
+         */
         case OPENFILE: {
             if (req.flag == O_CREATE) {
-                res->result = queue_s_push(storage_q, req.pathname, false, fd);
-                printf("Openfile_O_CREATE, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                res.result = queue_s_push(storage_q, req.pathname, false, fd);
+                printf("Openfile_O_CREATE di %s, fd: %d, esito: %s\n", req.pathname, fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
 
             } else if (req.flag == O_CREATE_LOCK) {
-                res->result = queue_s_push(storage_q, req.pathname, true, fd);
-                printf("Openfile_O_CREATE_LOCK, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                res.result = queue_s_push(storage_q, req.pathname, true, fd);
+                printf("Openfile_O_CREATE_LOCK di %s, fd: %d, esito: %s\n", req.pathname, fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
 
             } else if (req.flag == O_LOCK) {
-                res->result = queue_s_updateOpeners(storage_q, req.pathname, true, fd);
-                printf("Openfile_O_LOCK, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                res.result = queue_s_updateOpeners(storage_q, req.pathname, true, fd);
+                printf("Openfile_O_LOCK di %s, fd: %d, esito: %s\n", req.pathname, fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
 
             } else if (req.flag == O_NULL) {
-                res->result = queue_s_updateOpeners(storage_q, req.pathname, false, fd);
-                printf("Openfile_O_NULL, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                res.result = queue_s_updateOpeners(storage_q, req.pathname, false, fd);
+                printf("Openfile_O_NULL di %s, fd: %d, esito: %s\n", req.pathname, fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
 
             } else {
                 // flag non riconosciuto
                 printf("Openfile fd: %d, flag non riconosciuto\n", fd);
-                res->result = EINVAL;
-            }
-            
+                res.result = EINVAL;
+            }    
         }
         break;
         case READFILE: {
-            res->result = queue_s_readFile(storage_q, req.pathname, fd, &(res->datalen), data);
-            printf("Readfile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
-            printf("Readfile, fd: %d, datalen: %d, buf: %s\n", fd, res->datalen, *data);
-
+            res.result = queue_s_readFile(storage_q, req.pathname, fd);
+            printf("Readfile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         case READNFILES: { //TODO
-            res->result = EPERM;
-            printf("ReadNfiles, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            res.result = queue_s_readNFiles(storage_q, req.pathname, fd, req.datalen);
+            printf("ReadNfiles, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         case WRITEFILE: {
@@ -95,7 +106,7 @@ int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, vo
             if (buf == NULL) {
                 fprintf(stderr, "fd: %d, malloc WriteToFile fallita\n", fd);
                 fflush(stdout);
-                res->result = ENOMEM;
+                res.result = ENOMEM;
             }
 
             int nread = readn(fd, buf, req.datalen);
@@ -116,10 +127,12 @@ int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, vo
 
                 free(buf);
             } else {
-                res->result = queue_s_writeFile(storage_q, req.pathname, fd, buf, req.datalen);
-                printf("WriteToFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
-            }
+                res.result = queue_s_writeFile(storage_q, req.pathname, fd, buf, req.datalen);
+                free(buf);
+                printf("WriteToFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
 
+            }
         }
         break;
         case APPENDTOFILE: {
@@ -127,7 +140,7 @@ int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, vo
             if (buf == NULL) {
                 fprintf(stderr, "fd: %d, malloc appendToFile fallita\n", fd);
                 fflush(stdout);
-                res->result = ENOMEM;
+                res.result = ENOMEM;
             }
 
             int nread = readn(fd, buf, req.datalen);
@@ -137,7 +150,7 @@ int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, vo
 
                 free(buf);
 
-                printf("Close fd:%d files, %s", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
+                printf("Close fd:%d files, esito:%s", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
                 close(fd);
 
                 return -1;
@@ -148,37 +161,49 @@ int requestHandler (int myid, int fd, msg_request_t req, msg_response_t *res, vo
 
                 free(buf);
             } else {
-                res->result = queue_s_appendToFile(storage_q, req.pathname, fd, buf, req.datalen);
-                printf("AppendToFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+                res.result = queue_s_appendToFile(storage_q, req.pathname, fd, buf, req.datalen);
                 free(buf);
+                printf("AppendToFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+                if (res.result <= 0) return res.result;
             }
-
         }
         break;
         case LOCKFILE: {
-           res->result = queue_s_lockFile(storage_q, req.pathname, fd);
-           printf("LockFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            res.result = queue_s_lockFile(storage_q, req.pathname, fd);
+            printf("LockFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         case UNLOCKFILE: {
-            res->result = queue_s_lockFile(storage_q, req.pathname, fd);
-            printf("UnlockFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            res.result = queue_s_unlockFile(storage_q, req.pathname, fd);
+            printf("UnlockFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         case CLOSEFILE: {
-            res->result = queue_s_closeFile(storage_q, req.pathname, fd);
-            printf("CloseFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            res.result = queue_s_closeFile(storage_q, req.pathname, fd);
+            printf("CloseFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         case REMOVEFILE: {
-            res->result = queue_s_removeFile(storage_q, req.pathname, fd);
-            printf("RemoveFile, fd: %d, esito: %s\n", fd, myStrerror(res->result));
+            res.result = queue_s_removeFile(storage_q, req.pathname, fd);
+            printf("RemoveFile, fd: %d, esito: %s\n", fd, myStrerror(res.result));
+            if (res.result <= 0) return res.result;
         }
         break;
         default: { // non dovrebbe succedere (api scritta male)
-            res->result = EPERM;
+            res.result = EPERM;
             printf("Operazione richiesta da fd: %d non riconosciuta", fd);
         }
+    }
+
+    //invio messaggio al client (finisco qui nel caso in caso di errore (e fd ancora aperto))
+    if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
+        close(fd); //TODO gestire nel client
+        printf("writen res requestHandler errore\n");
+        fflush(stdout);
+        return -1;
     }
 
     fflush(stdout);
@@ -201,9 +226,6 @@ void *Worker(void *arg) {
 
     int nread; // numero caratteri letti
     msg_request_t req; // messaggio richiesta dal client
-    msg_response_t res; // messaggio risposta al client
-    void *data = NULL;
-
 
     size_t consumed = 0;
     while (1)
@@ -225,7 +247,7 @@ void *Worker(void *arg) {
             printf("⛔️ Worker %d, chiudo:%d\n", myid, fd);
             fflush(stdout);
 
-            printf("Close fd: %d, files: %s\n", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
+            printf("Close fd: %d, esito: %s\n", fd, myStrerror(queue_s_closeFdFiles(storage_q, fd)));
 
             close(fd);
         } else if (nread != sizeof(msg_request_t)) {
@@ -237,27 +259,9 @@ void *Worker(void *arg) {
             printf("Workers %d, Server got: %d, from %d\n", myid, req.op, fd);
             fflush(stdout);
 
-            if (requestHandler(myid, fd, req, &res, &data) == 0) {
-
-                memset(&req, '\0', sizeof(req));
-
-                if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-                    //TODO gestione errore
-                    printf("writen res worker errore\n");
-                    fflush(stdout);
-                }
-
-                if (res.datalen > 0) {
-                    if (writen(fd, data, res.datalen) != res.datalen) {
-                        //TODO gestione errore
-                        printf("writen data worker errore\n");
-                        fflush(stdout);
-                    }
-                }
-
-                memset(&res, '\0', sizeof(res));
-                data = NULL;
-
+            if (requestHandler(myid, fd, req) != 0) {
+                //TODO
+            } else {
                 //scrivo nella pipe in modo che manager riaggiunga fd al set
 
                 if (writen(pfd_w, &fd, sizeof(fd)) != sizeof(fd)) {
@@ -269,6 +273,8 @@ void *Worker(void *arg) {
                     fflush(stdout);
                 }
             }
+
+            memset(&req, '\0', sizeof(req));
         }     
     }
 
@@ -285,7 +291,7 @@ int main(int argc, char *argv[])
     //TODO read config
     config.num_workers = 3;
     strncpy(config.sockname, "./mysock", UNIX_PATH_MAX);
-    config.limit_num_files = 1;
+    config.limit_num_files = 3;
     config.storage_capacity = 100;
 
 

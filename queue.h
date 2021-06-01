@@ -31,7 +31,7 @@ typedef struct Queue {
  */
 Queue_t *queue_init();
 
-/** Cancella una coda allocata con initQueue. Deve essere chiamata da
+/** Cancella una coda allocata con queue_init. Deve essere chiamata da
  *  da un solo thread (tipicamente il thread main).
  *  
  *   \param q puntatore alla coda da cancellare
