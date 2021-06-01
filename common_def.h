@@ -33,6 +33,7 @@ typedef struct {
 
 typedef struct {
     int result; // 0:success, >0: errno
+    char pathname[UNIX_PATH_MAX]; // nome del file (eventualmente)
     int datalen;
 } msg_response_t;
 
