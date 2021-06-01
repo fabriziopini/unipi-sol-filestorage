@@ -1,3 +1,5 @@
+#ifndef MESSAGE_H
+#define MESSAGE_H
 
 #define MAX_PATH_LENGTH 256
 
@@ -69,3 +71,5 @@ typedef struct {
     write(csfd, &(msg->data.buf), msg->data.len;
 
 */
+
+#endif
