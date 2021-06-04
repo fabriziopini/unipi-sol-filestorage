@@ -73,7 +73,7 @@ void queue_delete(Queue_t *q) {
 
 
 int queue_push(Queue_t *q, int data) {
-    if ((q == NULL) || (data == -1)) { errno= EINVAL; return -1;}
+    if (q == NULL) { errno= EINVAL; return -1;}
     Node_t *n = allocNode();
     if (!n) return -1;
     n->data = data; 

@@ -6,12 +6,10 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
-//TODO altri include??
 
-#ifndef COMMON_FUNCS_H
-#define COMMON_FUNCS_H
+#include "common_funcs.h"
 
-/* Read "n" bytes from a descriptor */
+
 ssize_t readn(int fd, void *ptr, size_t n) {  
     size_t   nleft;
     ssize_t  nread;
@@ -29,7 +27,6 @@ ssize_t readn(int fd, void *ptr, size_t n) {
 }
 
 
-/* Write "n" bytes to a descriptor */
 ssize_t writen(int fd, void *ptr, size_t n) {  
     size_t   nleft;
     ssize_t  nwritten;
@@ -46,6 +43,12 @@ ssize_t writen(int fd, void *ptr, size_t n) {
     return(n - nleft); /* return >= 0 */
 }
 
+/** Ricava il nome del file da 'path'
+ * 
+ *  \param path pathname
+ * 
+ *  \retval stringa contenente il nome del file
+ */
 char *getFileName(const char *path)
 {
     char *filename = strrchr(path, '\/'); // \\ su windows
@@ -95,4 +98,3 @@ int createWriteInDir (char *pathname, void *buf, size_t size, char *dirname) {
     return 0;
 }
 
-#endif
