@@ -32,8 +32,8 @@ static inline StorageQueue_t *allocQueue()                 { return malloc(sizeo
 static inline void freeStorageNode(StorageNode_t *node)    { queue_delete(node->opener_q); free((void*)node); }
 static inline void LockQueue(StorageQueue_t *q)            { LOCK(&q->qlock);   }
 static inline void UnlockQueue(StorageQueue_t *q)          { UNLOCK(&q->qlock); }
-static inline void UnlockQueueAndWait(StorageQueue_t *q)   { WAIT(&q->qcond, &q->qlock); }
-static inline void UnlockQueueAndSignal(StorageQueue_t *q) { SIGNAL(&q->qcond); UNLOCK(&q->qlock); }
+static inline void UnlockQueueAndWait(StorageQueue_t *q, StorageNode_t *node)   { WAIT(&node->filecond, &q->qlock); }
+static inline void UnlockQueueAndSignal(StorageQueue_t *q, StorageNode_t *node) { SIGNAL(&node->filecond); UNLOCK(&q->qlock); }
 
 /** Restituisce il nodo identificato da pathname
  *  (da chiamare con lock)
@@ -108,14 +108,6 @@ StorageQueue_t *queue_s_init(int limit_num_files, unsigned long storage_capacity
 	    return NULL;
     }
 
-    if (pthread_cond_init(&q->qcond, NULL) != 0) {
-	    perror("mutex cond");
-	
-        if (&q->qlock) pthread_mutex_destroy(&q->qlock);
-	    
-        return NULL;
-    }   
-
     return q;
 }
 
@@ -127,12 +119,13 @@ void queue_s_delete(StorageQueue_t *q) {
         StorageNode_t *p = (StorageNode_t*)q->head;
         q->head = q->head->next;
 
-        free(p->data);
+        if (p->len > 0) free(p->data);
+        if (&p->filecond)  pthread_cond_destroy(&p->filecond);
         freeStorageNode(p);
     }
 
     if (&q->qlock)  pthread_mutex_destroy(&q->qlock);
-    if (&q->qcond)  pthread_cond_destroy(&q->qcond);
+    
     
     free(q);
 }
@@ -143,6 +136,7 @@ void queue_s_deleteNodes (StorageNode_t *head) {
         head = head->next;
 
         if (p->len > 0) free(p->data);
+        if (&p->filecond)  pthread_cond_destroy(&p->filecond);
         freeStorageNode(head);
     }
 
@@ -160,8 +154,14 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
     fflush(stdout);
 
     StorageNode_t *n = allocStorageNode();
-    
+
     if (!n) return ENOMEM;
+
+    if (pthread_cond_init(&n->filecond, NULL) != 0) {
+	    perror("mutex cond");
+	    
+        return NULL;
+    }   
     
     strncpy(n->pathname, pathname, MAX_NAME_LENGTH); 
     n->locked = locked; 
@@ -172,11 +172,13 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
     if (!n->opener_q)
     {
         fprintf(stderr, "fd: %d, initQueue fallita\n", fd);
+        if (&n->filecond)  pthread_cond_destroy(&n->filecond);
         freeStorageNode(n);
         return EAGAIN;
     }
     if (queue_push(n->opener_q, fd) != 0) {
         fprintf(stderr, "fd: %d, push opener_q fallita\n", fd);
+        if (&n->filecond)  pthread_cond_destroy(&n->filecond);
         freeStorageNode(n);
         return EAGAIN;
     }
@@ -186,39 +188,31 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
 
     LockQueue(q);
     if (queue_s_find(q, pathname) != NULL) {
+        if (&n->filecond)  pthread_cond_destroy(&n->filecond);
         freeStorageNode(n);
 
         UnlockQueue(q);
 
         return EPERM;
     }
-        printf("AQQQNDJANJSND\n");
-    fflush(stdout);
 
     if (q->cur_numfiles == 0) {
-                printf("AQQQNDJANJSND\n");
-    fflush(stdout);
         q->head = n;
         q->tail = n;
     } else {
-        printf("q->tail: %d", q->tail);
-            fflush(stdout);
+        printf("q->tail: %d\n", q->tail); // TODO togliere
+        fflush(stdout);
 
         q->tail->next = n;
         q->tail = n;
     }
-    
-    printf("ARRIVATO\n");
-    fflush(stdout);
 
     if (q->cur_numfiles == q->limit_num_files) {
-        printf("ENTRA\n");
+        printf("Limite di files raggiunto\n");
         if((poppedNode = queue_s_pop(q)) == NULL) {
             UnlockQueue(q);
             return errno;
         }
-
-        printf("poppedNode: %s\n", poppedNode->pathname);
 
         q->replace_occur++;
         q->cur_numfiles += 1;
@@ -233,8 +227,6 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
         if (q->max_num_files == q->cur_numfiles) q->max_num_files++;
     }
     q->cur_numfiles += 1;
-
-    printf("USCI\n");
 
     UnlockQueue(q);
 
@@ -265,10 +257,9 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
         return ENOENT;
     }
 
-    if (item->locked && item->fd_locker != fd) {
-        //TODO forse da cambiare, leggere il testo funzione lockFile: aspettare (ci mettiamo in wait)
-        UnlockQueue(q);
-        return EPERM;
+    while (item->locked && item->fd_locker != fd) {
+        printf("queue_s_openFile, fd: %fd, file: %s locked, aspetto...\n");
+        UnlockQueueAndWait(q, item);
     }
     if (item->locked) { //&& item->fd_locker == fd
         if (!locked) { //non lo voglio lockare, unlocko
@@ -305,7 +296,7 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
         }
     } 
 
-    UnlockQueue(q); //TODO
+    UnlockQueue(q);
 
     msg_response_t res;
     res.result = 0;
@@ -374,6 +365,10 @@ int queue_s_readFile(StorageQueue_t *q, char *pathname, int fd) {
         return -1;
     }
 
+    printf("Letto (ed inviato) file %s, di lunghezza %d\n", item->pathname, item->len);
+    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
+    fflush(stdout);
+
     UnlockQueue(q);
 
     return 0;
@@ -389,7 +384,7 @@ int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
 
     LockQueue(q);
 
-    if (q->cur_numfiles < n || n == 0) res.datalen = q->cur_numfiles;
+    if (q->cur_numfiles < n || n <= 0) res.datalen = q->cur_numfiles;
     else res.datalen = n;
 
     printf("Numero di files che verranno inviati: %d\n", res.datalen);
@@ -420,7 +415,6 @@ int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
             UnlockQueue(q);
             return -1;
         }
-        printf("Lunghezza file %s: %d\n", res.pathname, res.datalen);
 
         if (writen(fd, temp->data, res.datalen) != res.datalen) {
             //TODO gestione errore
@@ -431,6 +425,11 @@ int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
             UnlockQueue(q);
             return -1;
         }
+
+
+        printf("Letto (ed inviato) file %s, di lunghezza %d\n", temp->pathname, temp->len);
+        printf("Contenuto: %s\n", temp->data + '\0'); //TODO togliere
+        fflush(stdout);
 
         temp = temp->next;
         i++;
@@ -493,13 +492,14 @@ int queue_s_writeFile(StorageQueue_t *q, char *pathname, int fd, void *buf, int 
     item->len = buf_len;
     item->data = tmp;
 
-
-    printf("item->len: %d\n", item->len);
-    printf("item->data: %s\n", item->data + '\0'); //TODO togliere
+    printf("Scritto il file %s, per una lunghezza di %d\n", item->pathname, item->len);
+    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
     fflush(stdout);
 
     q->cur_usedstorage += item->len;
+
     if (q->max_used_storage < q->cur_usedstorage) q->max_used_storage = q->cur_usedstorage;
+
     item->locker_can_write = false;
 
     UnlockQueue(q);
@@ -568,12 +568,16 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
         return ENOMEM;
     } 
 
-    memcpy(&tmp[item->len], buf, buf_len); //TODO fare domanda prof
+    memcpy(&tmp[item->len], buf, buf_len);
 
     item->data = tmp;
     item->len += buf_len;
 
-    q->cur_usedstorage += item->len;
+    printf("Append sul file %s, lunghezza attuale di %d\n", item->pathname, item->len);
+    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
+    fflush(stdout);
+
+    q->cur_usedstorage += buf_len;
 
     if (q->max_used_storage < q->cur_usedstorage) q->max_used_storage = q->cur_usedstorage;
 
@@ -614,11 +618,9 @@ int queue_s_lockFile(StorageQueue_t *q, char *pathname, int fd) {
         return ENOENT;
     }
 
-    if (item->locked && item->fd_locker != fd) {
-        //TODO da cambiare, leggere il testo: aspettare (ci mettiamo in wait)
-        
-        UnlockQueue(q);
-        return EPERM;
+    while (item->locked && item->fd_locker != fd) {
+        printf("queue_s_lockFile, fd: %fd, file: %s locked, aspetto...\n");   
+        UnlockQueueAndWait(q, item);
     }
 
     if (queue_find(item->opener_q, fd) == NULL) {
@@ -674,11 +676,7 @@ int queue_s_unlockFile(StorageQueue_t *q, char *pathname, int fd) {
     item->fd_locker = -1;
     item->locker_can_write = false;
 
-            printf("temp->len: %d\n", item->len);
-        printf("temp->data: %s\n", item->data + '\0'); //TODO togliere
-        fflush(stdout);
-
-    UnlockQueue(q);
+    UnlockQueueAndSignal(q, item);
 
     msg_response_t res;
     res.result = 0;
@@ -770,7 +768,7 @@ int queue_s_closeFdFiles(StorageQueue_t *q, int fd) {
         item = item->next;
     }
 
-    UnlockQueue(q); //TODO
+    UnlockQueue(q);
 
     return 0;
 
@@ -822,6 +820,7 @@ int queue_s_removeFile(StorageQueue_t *q, char *pathname, int fd) {
         q->cur_usedstorage = q->cur_usedstorage - temp->len;
 
         free(temp->data);
+        if (&temp->filecond)  pthread_cond_destroy(&temp->filecond);
         freeStorageNode(temp);
     }
 
@@ -839,6 +838,26 @@ int queue_s_removeFile(StorageQueue_t *q, char *pathname, int fd) {
         return -1;
     }
     return 0;
+}
+
+void queue_s_printListFiles(StorageQueue_t *q) {
+
+    if (q == NULL) return;
+
+    LockQueue(q);
+
+    StorageNode_t *curr = q->head;
+
+    while(curr != NULL) {
+        printf("%s\n", curr->pathname);
+        fflush(stdout);
+
+        curr = curr->next;
+
+    }
+
+    UnlockQueue(q);
+
 }
 
 
@@ -940,6 +959,7 @@ int queue_s_popUntil(StorageQueue_t *q, int buf_len, int *num_poppedFiles, Stora
     if (cache_replacement)
         q->replace_occur++;
 
+
     return 0;
 }
 
@@ -953,24 +973,26 @@ int send_to_client_and_free(int fd, int num_files, StorageNode_t *poppedH) {
     // invio messaggio al client (quanti files riceverà)
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
         close(fd); //TODO gestire nel client
-        printf("writen res queue_s_readFile errore\n");
+        printf("writen res send_to_client_and_free errore\n");
         fflush(stdout);
         queue_s_deleteNodes(poppedH);
         return -1;
     }
+
+    printf("Numero di files in espulsione: %d\n", num_files);    
 
     while(poppedH != NULL) {
         temp = poppedH;
         res.datalen = temp->len;
         strcpy(res.pathname, temp->pathname);
 
-        printf("temp->len: %d\n", temp->len);
-        printf("temp->data: %s\n", temp->data + '\0'); //TODO togliere
+        printf("Espulso file %s, di lunghezza %d\n", temp->pathname, temp->len);
+        printf("Contenuto: %s\n", temp->data + '\0'); //TODO togliere
         fflush(stdout);
 
         if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
             close(fd); //TODO gestire nel client
-            printf("writen res queue_s_readFile errore\n");
+            printf("writen res send_to_client_and_free errore\n");
             fflush(stdout);
             queue_s_deleteNodes(poppedH);
             return -1;
@@ -980,7 +1002,7 @@ int send_to_client_and_free(int fd, int num_files, StorageNode_t *poppedH) {
             if (writen(fd, temp->data, res.datalen) != res.datalen) {
                     //TODO gestione errore
                 close(fd); //TODO gestire nel client
-                printf("writen data queue_s_readFile errore\n");
+                printf("writen data send_to_client_and_free errore\n");
                 fflush(stdout);
                 queue_s_deleteNodes(poppedH);
                 return -1;
@@ -995,6 +1017,7 @@ int send_to_client_and_free(int fd, int num_files, StorageNode_t *poppedH) {
         num_files--;
         poppedH = poppedH->next;
 
+        if (&temp->filecond)  pthread_cond_destroy(&temp->filecond);
         freeStorageNode(temp);
 
     }

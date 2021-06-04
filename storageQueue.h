@@ -21,10 +21,11 @@ typedef struct StorageNode {
 	bool	        locked;		// flag di lock da client
 	int	            fd_locker;	// fd del processo client che ha fatto lock
     bool            locker_can_write; // true se l'ultima operazione fatta dal locker è una open con create_lock
-    Queue_t         *opener_q; // TODO quando un client esce, devo scorrere tutti i nodi della coda, e di ciascun nodo scorrere questa coda (opener) per togliere il client (se c'è)
+    Queue_t         *opener_q;  // TODO quando un client esce, devo scorrere tutti i nodi della coda, e di ciascun nodo scorrere questa coda (opener) per togliere il client (se c'è)
                                     // E' molto costoso, però va bene così se presuppongo che:
                                     //     il mio serverStorage ha come scopo servire POCHI client (o comunque che condividono pochi file tra di loro) che mettono tanti file a testa (quindi il peso di scorrere le liste dei client è limitato, rispetto allo scorrere le liste dei file per ogni operazione)
                                     //     e che i client facciano varie operazioni, mentre l'uscita è un evento raro
+    pthread_cond_t  filecond;   // locked && fd_locker != fd
 	struct StorageNode* next;
 } StorageNode_t;
 
@@ -46,12 +47,14 @@ typedef struct StorageQueue {
     unsigned long storage_capacity;     // dimensione dello storage in bytes
 
     pthread_mutex_t qlock;
-    pthread_cond_t  qcond;
 } StorageQueue_t;
 
 
 /** Alloca ed inizializza una coda. Deve essere chiamata da un solo 
  *  thread (tipicamente il thread main).
+ * 
+ *   \param limit_num_files numero limite di file nello storage
+ *   \param storage_capacity dimensione dello storage in bytes
  *
  *   \retval NULL se si sono verificati problemi nell'allocazione (errno settato)
  *   \retval puntatore alla coda allocata
@@ -112,7 +115,7 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
 int queue_s_readFile(StorageQueue_t *q, char *pathname, int fd);
 
 /** Comunica al client (sul socket fd_locker), i files contenuti nella coda, fino
- *  ad un massimo di n (se n=0 comunica tutti i file contenuti nella coda)
+ *  ad un massimo di n (se n<=0 comunica tutti i file contenuti nella coda)
  *  
  *   \param q puntatore alla coda
  *   \param pathname del file
@@ -226,9 +229,12 @@ int queue_s_closeFdFiles(StorageQueue_t *q, int fd);
  */
 int queue_s_removeFile(StorageQueue_t *q, char *pathname, int fd);
 
-
-StorageNode_t* queue_s_find(StorageQueue_t *q, char *pathname);
-
+/** Stampa la lista dei file contenuti nella coda
+ * 
+ *   \param q puntatore alla coda
+ *  
+ */
+void queue_s_printListFiles(StorageQueue_t *q);
 
 /** Ritorna la lunghezza attuale della coda passata come parametro.
  */
