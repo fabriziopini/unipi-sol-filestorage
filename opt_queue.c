@@ -11,7 +11,7 @@
 
 /**
  * @file opt_queue.c
- * @brief File di implementazione dell'interfaccia per la coda
+ * @brief File di implementazione dell'interfaccia per la coda delle operazioni
  */
 
 
@@ -43,7 +43,7 @@ void opt_queue_delete(OptQueue_t *q) {
     while(q->head != NULL) {
 	    OptNode_t *p = (OptNode_t*)q->head;
 	    q->head = q->head->next;
-	    freeNode(p); //TODO c'è altra roba nel nodo? fare free
+	    freeNode(p);
     }
 
     free(q);
@@ -57,9 +57,13 @@ int opt_queue_push(OptQueue_t *q, int opt, char *arg) {
 
     OptNode_t *n = allocNode();
     if (!n) return ENOMEM;
+    memset(n, '\0', sizeof(OptNode_t));
+
 
     n->opt = opt;
-    strncpy(n->arg, arg, MAX_NAME_LENGTH); 
+    strncpy(n->arg, arg, PATH_MAX); 
+    printf("opt_queue_push arg:%s\n", n->arg);
+    fflush(stdout);
     n->next = NULL;
 
     if (q->qlen == 0) {
@@ -76,7 +80,8 @@ int opt_queue_push(OptQueue_t *q, int opt, char *arg) {
 }
 
 int opt_queue_setRDirname(OptQueue_t *q, char *dirname) {
-        if ((q == NULL) || (dirname == NULL)) { 
+    
+    if ((q == NULL) || (dirname == NULL)) { 
         return EINVAL;
     }
 
@@ -84,7 +89,7 @@ int opt_queue_setRDirname(OptQueue_t *q, char *dirname) {
         return ENOENT;
     }
 
-    strncpy(q->tail->dirname, dirname, MAX_NAME_LENGTH); 
+    strncpy(q->tail->dirname, dirname, PATH_MAX); 
     
     return 0;
 }
@@ -98,8 +103,23 @@ int opt_queue_setWDirname(OptQueue_t *q, char *dirname) {
         return ENOENT;
     }
 
-    strncpy(q->tail->dirname, dirname, MAX_NAME_LENGTH); 
+    strncpy(q->tail->dirname, dirname, PATH_MAX); 
     
     return 0;
 }
+
+int opt_queue_setADirname(OptQueue_t *q, char *dirname) {
+    if ((q == NULL) || (dirname == NULL)) { 
+        return EINVAL;
+    }
+
+    if ((q->tail == NULL) || (q->tail->opt != APPEND)) {
+        return ENOENT;
+    }
+
+    strncpy(q->tail->dirname, dirname, PATH_MAX); 
+    
+    return 0;
+}
+
 

@@ -2,21 +2,22 @@
 #define OPT_QUEUE_H
 
 #include <pthread.h>
+#include <limits.h>
 #include "client_def.h"
 
-#define MAX_NAME_LENGTH 256
+//define MAX_NAME_LENGTH 256
 
-/** Elemento della coda.
+/** Elemento della coda delle operazioni
  *
  */
 typedef struct Opt {
     input_opt  opt; // enum operazione
-    char       arg[MAX_NAME_LENGTH]; // argomento operazione
-    char       dirname[MAX_NAME_LENGTH]; // eventuale directory per opt. di read/write
+    char       arg[PATH_MAX]; // argomento operazione
+    char       dirname[PATH_MAX]; // eventuale directory per opt. di read/write/append
     struct Opt *next;
 } OptNode_t;
 
-/** Struttura dati coda.
+/** Struttura dati coda delle operazioni
  *
  */
 typedef struct OptQueue {
@@ -70,6 +71,16 @@ int opt_queue_setWDirname(OptQueue_t *q, char *dirname);
  *   \retval errno se errore
  */
 int opt_queue_setRDirname(OptQueue_t *q, char *dirname);
+
+/** Setta q->dirname =  dirname, se l'operazione contenuta nella tail della coda è APPEND
+ *
+ *   \param q puntatore alla coda
+ *   \param dirname nome della directory (dove vengono scritti i file rimossi dal server)
+ *  
+ *   \retval 0 se successo
+ *   \retval errno se errore
+ */
+int opt_queue_setADirname(OptQueue_t *q, char *dirname);
 
 
 #endif /* OPT_QUEUE_H_ */
