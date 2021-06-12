@@ -1,6 +1,8 @@
 #ifndef COMMON_DEF_H
 #define COMMON_DEF_H
 
+#include <limits.h>
+
 #define UNIX_PATH_MAX 104 
 
 // stato del server
@@ -44,7 +46,7 @@ typedef enum {
 // struttura del messaggio di richiesta al server
 typedef struct {
     op_t            op; // tipo di operazione sul server
-    char            pathname[UNIX_PATH_MAX]; // nome del file
+    char            pathname[PATH_MAX]; // nome del file
     int             flag; // flag con cui può essere richiesta l'apertura di un file
     int             datalen; // assume un significato diverso a seconda di 'op':
                              //     - READNFILES: numero di files che richiediamo di leggere
@@ -55,7 +57,7 @@ typedef struct {
 // struttura del messaggio di risposta dal server
 typedef struct {
     int result; // 0:success, >0: errno
-    char pathname[UNIX_PATH_MAX]; // nome del file (eventualmente)
+    char pathname[PATH_MAX]; // nome del file (eventualmente)
     int datalen;
 } msg_response_t;
 
