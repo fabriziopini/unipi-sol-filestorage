@@ -127,10 +127,13 @@ int gest_unlockList(char *arg);
 int gest_removeList(char *arg);
 
 
+// usage function
+static void usage(int pid);
+
 int main(int argc, char *argv[]) {
 
     if (argc == 1) {
-        printf("👦 %d: Usage: TODO\n", pid);
+        usage(pid);
         return -1;
     }
 
@@ -148,10 +151,10 @@ int main(int argc, char *argv[]) {
     }
 
     // parsing degli argomenti ed opportuna costruzione della coda delle operazioni
-    while((opt = getopt(argc, argv, ":hf:w:W:D:a:A:r:R::d:t:l:u:c:p")) != -1) {
+    while((opt = getopt(argc, argv, ":hf:w:W:D:a:A:r:R:d:t:l:u:c:p")) != -1) {
 	    switch(opt) {
 	        case 'h':
-                printf("👦 %d: Usage: TODO\n", pid);
+                usage(pid);
                 return 0;
 	            break;
 	        case 'f':
@@ -180,16 +183,13 @@ int main(int argc, char *argv[]) {
                     printf("optarg: %s\n",optarg);
                     if (optarg[0] != '-') {
                         res = opt_queue_push(q, READN, optarg);
-                        printf("👦 %d: Opzione -R, %s\n", pid, optarg); //TODO da togliere
                     } else {
                         optarg = argv[optind--];
                         res = opt_queue_push(q, READN, "n=0");
-                        printf("👦 %d: Opzione -R senza argomento\n", pid); //TODO da togliere
                     }
                 
                 } else {
                     res = opt_queue_push(q, READN, "n=0");
-                    printf("👦 %d: Opzione -R senza argomento\n", pid); //TODO da togliere
                 }
 	            break;
 	        case 'd':
@@ -198,7 +198,8 @@ int main(int argc, char *argv[]) {
 	        case 't':
                 time_ms = atoi(optarg);
                 if (time_ms == 0) {
-                    fprintf(stderr, "👦 %d: ❌ Usage: TODO\n", pid);
+                    fprintf(stderr, "👦 %d: ❌ -t number required\n", pid);
+                    usage(pid);
                     opt_queue_delete(q);
                     return -1;
                 }
@@ -219,16 +220,17 @@ int main(int argc, char *argv[]) {
                 switch (optopt)
                 {
                 case 'R':
-                    printf("👦 %d: opzione -%c senza argomento\n", pid, optopt); //TODO da togliere
                     res = opt_queue_push(q, READN, "n=0");
 
                     break;
                 default:
-                    fprintf(stderr, "👦 %d: ❌ Usage: TODO\n", pid);
+                    usage(pid);
+                    opt_queue_delete(q);
                     return -1;
                 }
                 break;
 	        default:
+                usage(pid);
                 opt_queue_delete(q);
                 return -1;
 	            break;
@@ -244,12 +246,14 @@ int main(int argc, char *argv[]) {
     
     struct timespec current_time;
     if (clock_gettime(CLOCK_REALTIME, &current_time) == -1) {
-            return -1;
+        opt_queue_delete(q);
+        return -1;
     }
     current_time.tv_sec = current_time.tv_sec + 10; //scelto arbitrariamente (passare come opzione in millisecondi volendo, e trasformarlo in sec e nanosecm)
     current_time.tv_nsec = current_time.tv_nsec + 0;
     if (openConnection(sockname, 1000, current_time) == -1) { // msec = 1000 scelto arbitrariamente
         fprintf(stderr, "👦 %d: ❌ openConnection %s, ERRORE %s\n", pid, sockname, strerror(errno));
+        opt_queue_delete(q);
 
         return -1;
     }
@@ -355,8 +359,6 @@ int isdot(const char dir[]) {
 int recWrite(char *readfrom_dir, char *del_dir, long n) {
     struct stat statbuf;
 
-    printf("👦 %d: directory da cui leggere: %s\n", pid, readfrom_dir); //TODO da togliere sicuro
-
     if (stat(readfrom_dir, &statbuf) != 0) {
         fprintf(stderr, "👦 %d: ❌ writeDirname stat %s, ERRORE %s\n", pid, readfrom_dir, strerror(errno));
 		return -1;
@@ -396,12 +398,10 @@ int recWrite(char *readfrom_dir, char *del_dir, long n) {
 	        }
 
 	        if (S_ISDIR(statbuf2.st_mode)) {
-                if(recWrite(file, del_dir, n) == -1) return -1;
+                if(recWrite(filename, del_dir, n) == -1) return -1;
 	        } else {
                 cur_dirFiles_read++;
 
-                printf("👦 %d: file: %s\n", pid, file->d_name); // TODO togliere
-                fflush(stdout);
                 if (openFile(filename, O_CREATE_LOCK, del_dir) == -1) {
                     fprintf(stderr, "👦 %d: ❌ writeDirname openFile %s, ERRORE %s\n", pid, filename, strerror(errno));
                     return -1;
@@ -411,12 +411,12 @@ int recWrite(char *readfrom_dir, char *del_dir, long n) {
                     return -1;
                 }
 
-                if (unlockFile(filename) == -1) {
-                    fprintf(stderr, "👦 %d: ❌ writeDirname unlockFile %s, ERRORE %s\n", pid, filename, strerror(errno));
-                    return -1;
-                }
+                // if (unlockFile(filename) == -1) {
+                //     fprintf(stderr, "👦 %d: ❌ writeDirname unlockFile %s, ERRORE %s\n", pid, filename, strerror(errno));
+                //     return -1;
+                // }
 
-                if (closeFile(filename) == -1) {
+                if (closeFile(filename) == -1) { //fa anche unlock
                     fprintf(stderr, "👦 %d: ❌ writeDirname closeFile %s, ERRORE %s\n", pid, filename, strerror(errno));
                     return -1;
                 }
@@ -451,8 +451,6 @@ int gest_writeDirname(char *arg, char *dirname) {
     if (rest != NULL) {
         if (isNumber(&(rest[2]), &n) != 0)    n = 0; // client ha sbagliato a scrivere, metto n=0 (default)
     }
-
-    printf("👦 %d: n: %ld\n", pid, n); //TODO da togliere sicuro
 
     // controllo se dirname è una directory
     if (dirname != NULL && dirname[0] != '\0') {
@@ -497,12 +495,12 @@ int gest_writeList(char *arg, char *dirname) {
             return -1;
         }
 
-        if (unlockFile(token) == -1) {
-            fprintf(stderr, "👦 %d: ❌ writeList unlockFile %s, ERRORE %s\n", pid, token, strerror(errno));
-            return -1;
-        }
+        // if (unlockFile(token) == -1) {
+        //     fprintf(stderr, "👦 %d: ❌ writeList unlockFile %s, ERRORE %s\n", pid, token, strerror(errno));
+        //     return -1;
+        // }
 
-        if (closeFile(token) == -1) {
+        if (closeFile(token) == -1) { //fa la unlock anche
             fprintf(stderr, "👦 %d: ❌ writeList closeFile %s, ERRORE %s\n", pid, token, strerror(errno));
             return -1;
         }
@@ -590,7 +588,6 @@ int gest_Append(char *arg, char *dirname) {
 
 
 int gest_readList(char *arg, char *dirname) {
-    printf("👦 %d: arg: %s\n", pid, arg); //TODO togliere
     if (arg == NULL) return -1;
 
     char *token;
@@ -609,9 +606,6 @@ int gest_readList(char *arg, char *dirname) {
             fprintf(stderr, "👦 %d: ❌ readList readFile %s, ERRORE %s\n", pid, token, strerror(errno));
             return -1;
         }
-
-        printf("👦 %d: %s%n\n", pid, buf, &size); //TODO togliere
-        fflush(stdout);
 
         // controllo se dirname è una directory
         if (dirname != NULL && dirname[0] != '\0') {
@@ -652,8 +646,6 @@ int gest_readN(char *arg, char *dirname) {
 
     long n = 0; 
     if (strlen(arg) > 2 && isNumber(&(arg[2]), &n) != 0)    n = 0; // client ha sbagliato a scrivere, metto n=0 (default)
-
-    printf("👦 %d: n readN: %ld\n", pid, n); //TODO da togliere sicuro
 
     if (readNFiles(n, dirname) == -1) {
         fprintf(stderr, "👦 %d: ❌ readN readNFiles %ld, ERRORE %s\n", pid, n, strerror(errno));
@@ -738,93 +730,22 @@ int gest_removeList(char *arg) {
 }
 
 
-
-
-
-
-
-/*
-    if (openConnection(SOCKNAME, 1000) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE openConnection");
-
-        return -1;
-    }
-
-    sleep(1);
-
-    if (openFile("./Files/pippo.txt", O_CREATE) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE openFile");
-        
-        return -1;
-    }
-
-    // if (openFile("./Files/pippo.txt", O_LOCK) == -1) {
-    //     perror("👦  CLIENT: ❌ ERRORE openFile");
-        
-    //     return -1;
-    // }
-
-    if (closeFile("./Files/pippo.txt") == -1) {
-        perror("👦  CLIENT: ❌ ERRORE closeFile");
-        
-        return -1;
-    }
-
-    if (openFile("./Files/pippo.txt", O_NULL) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE openFile");
-        
-        return -1;
-    }
-
-
-    // if (writeFile("./Files/pippo.txt", NULL) == -1) {
-    //     perror("👦  CLIENT: ❌ ERRORE writeFile");
-        
-    //     return -1;
-    // }
-
-
-    void *buf = NULL;
-    size_t size = 0;
-    // if (readFile("./Files/pippo.txt", &buf, &size) == -1) {
-    //     perror("👦  CLIENT: ❌ ERRORE readFile");
-        
-    //     return -1;
-    // }
-
-    // printf("👦 %d: %s%n\n", buf, &size);
-    // fflush(stdout);
-
-    // sleep(1);
-
-    if (appendToFile("./Files/pippo.txt", ", ma voi riderete.", 18, NULL ) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE appendFile");
-        fflush(stdout);
-        
-        return -1;
-    }
-
-    if (appendToFile("./Files/pippo.txt", ", ma voi riderete.", 18, NULL ) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE appendFile");
-        fflush(stdout);
-        
-        return -1;
-    }
-
-    if (readFile("./Files/pippo.txt", &buf, &size) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE readFile");
-        
-        return -1;
-    }
-
-    
-    printf("👦 %d: %s%n\n", buf, &size); // volendo anche printf("👦 %d: %.*s\n", size, buf);
-    
-    fflush(stdout);
-
-    if (closeConnection(SOCKNAME) == -1) {
-        perror("👦  CLIENT: ❌ ERRORE closeConnection");
-        
-        return -1;
-    }
-*/
+static void usage(int pid) {
+    printf("👦 %d: usage:\n"
+	    "  -h : stampa la lista di tutte le opzioni accettate dal client\n"
+	    "  -f filename : specifica il nome del socket AF_UNIX a cui connettersi\n"
+	    "  -w dirname[,n=0] : invia al server i file nella cartella 'dirname'\n"
+	    "  -W file1[,file2]: lista di nomi di file da scrivere nel server separati da ','\n"
+	    "  -D dirname : cartella in memoria secondaria dove vengono scritti (lato client) i file che il server rimuove\n"
+	    "  -a : file,file2: file del server a cui fare appende e file (del file system) da cui leggere il contenuto da aggiungere"
+	    "  -A dirname : cartella in memoria secondaria dove vengono scritti (lato client) i file che il server rimuove a casusa dell'append\n"
+	    "  -r file1[,file2] : lista di nomi di file da leggere dal server separati da ','\n"
+	    "  -R [n=0] : legge n file qualsiasi memorizzati nel server; n=0 (o non è specificato) vengono letti tutti i file presenti nel server\n"
+	    "  -d dirname : cartella in memoria secondaria dove scrivere i file letti dal server con l'opzione '-r' o '-R'\n"
+	    "  -t time : ritardo in millisecondi che di due richieste successive al server (se non specificata si suppone -t 0)\n"
+	    "  -l file1[,file2] : lista di nomi di file su cui acquisire la mutua esclusione\n"
+	    "  -u file1[,file2] : lista di nomi di file su cui rilasciare la mutua esclusione\n"
+	    "  -c file1[,file2] : lista di file da rimuovere dal server se presenti\n"
+	    "  -p : stampa per ogni operazione: tipo di operazione, file di riferimento, esito e bytes letti/scritti\n",
+	    pid);
+}
