@@ -1,5 +1,11 @@
 *.o
 .*
 Files
+OtherFiles
 Espulsi
 Letti
+LettiFinal
+*.dSYM
+*.a
+client
+server
