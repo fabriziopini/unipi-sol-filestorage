@@ -10,3 +10,5 @@ LettiFinal
 client
 server
 TODO.*
+*.old
+*.tar.gz
