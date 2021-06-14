@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <pthread.h>
 
-// TODO negli esercizi erano scritte < > , non " "
 #include "util.h"
 #include "storageQueue.h" 
 #include "common_def.h"
@@ -13,6 +12,8 @@
 #include "queue.h"
 #include "config.h"
 
+extern struct config_struct config;
+extern server_status status;
 
 /**
  * @file storageQueue.c
@@ -104,11 +105,25 @@ StorageQueue_t *queue_s_init(int limit_num_files, unsigned long storage_capacity
 
 
     if (pthread_mutex_init(&q->qlock, NULL) != 0) {
-	    perror("mutex init");
+	    perror("🤖  SERVER: mutex init");
 	    return NULL;
     }
 
     return q;
+}
+
+// da chiamare quando server "muore" (prima della delete)
+void queue_s_broadcast(StorageQueue_t *q) {
+    if (q == NULL) return;
+
+    StorageNode_t *temp = q->head;
+    while(temp != NULL) {
+        if (temp->locked) {
+            BCAST(&temp->filecond);
+        }
+        temp = temp->next;
+    }
+
 }
 
 // da chiamare quando server "muore"
@@ -150,20 +165,21 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
         return EINVAL;
     }
 
-    printf("queue_s_push, fd: %d, pathname: %s\n", fd, pathname);
+    if (config.v > 2) printf("🤖  SERVER: queue_s_push, fd: %d, pathname: %s\n", fd, pathname);
     fflush(stdout);
 
     StorageNode_t *n = allocStorageNode();
 
     if (!n) return ENOMEM;
 
+    memset(n, '\0', sizeof(StorageNode_t));
+
     if (pthread_cond_init(&n->filecond, NULL) != 0) {
-	    perror("mutex cond");
-	    
-        return NULL;
+	    perror("🤖  SERVER: mutex cond");
+        return EAGAIN;
     }   
     
-    strncpy(n->pathname, pathname, MAX_NAME_LENGTH); 
+    strncpy(n->pathname, pathname, PATH_MAX); 
     n->locked = locked; 
     n->fd_locker = (locked) ? fd : -1; 
     n->locker_can_write = locked;
@@ -171,13 +187,13 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
     n->opener_q = queue_init();
     if (!n->opener_q)
     {
-        fprintf(stderr, "fd: %d, initQueue fallita\n", fd);
+        fprintf(stderr, "🤖  SERVER fd: %d, initQueue fallita\n", fd);
         if (&n->filecond)  pthread_cond_destroy(&n->filecond);
         freeStorageNode(n);
         return EAGAIN;
     }
     if (queue_push(n->opener_q, fd) != 0) {
-        fprintf(stderr, "fd: %d, push opener_q fallita\n", fd);
+        fprintf(stderr, "🤖  SERVERfd: %d, push opener_q fallita\n", fd);
         if (&n->filecond)  pthread_cond_destroy(&n->filecond);
         freeStorageNode(n);
         return EAGAIN;
@@ -200,15 +216,12 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
         q->head = n;
         q->tail = n;
     } else {
-        printf("q->tail: %d\n", q->tail); // TODO togliere
-        fflush(stdout);
-
         q->tail->next = n;
         q->tail = n;
     }
 
     if (q->cur_numfiles == q->limit_num_files) {
-        printf("Limite di files raggiunto\n");
+        if (config.v > 2) printf("🤖  SERVER: Limite di files raggiunto\n");
         if((poppedNode = queue_s_pop(q)) == NULL) {
             UnlockQueue(q);
             return errno;
@@ -231,12 +244,13 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd) {
     UnlockQueue(q);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_openFile errore\n");
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_openFile errore\n");
         fflush(stdout);
         return -1;
     }
@@ -257,9 +271,12 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
         return ENOENT;
     }
 
-    while (item->locked && item->fd_locker != fd) {
-        printf("queue_s_openFile, fd: %fd, file: %s locked, aspetto...\n");
+    while (item->locked && item->fd_locker != fd && status != CLOSED) {
+        if (config.v > 2) printf("🤖  SERVER: queue_s_openFile, fd: %d, file: %s locked, aspetto...\n", fd, pathname);
         UnlockQueueAndWait(q, item);
+    }
+    if (status == CLOSED) {
+        return ENETDOWN;
     }
     if (item->locked) { //&& item->fd_locker == fd
         if (!locked) { //non lo voglio lockare, unlocko
@@ -279,18 +296,18 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
         item->opener_q = queue_init();
         if (!q)
         {
-            fprintf(stderr, "fd: %d, initQueue fallita\n", fd);
+            fprintf(stderr, "🤖  SERVER fd: %d, initQueue fallita\n", fd);
             UnlockQueue(q);
             return EAGAIN;
         }
         if (queue_push(item->opener_q, fd) != 0) {
-            fprintf(stderr, "fd: %d, push opener_q fallita\n", fd);
+            fprintf(stderr, "🤖  SERVER fd: %d, push opener_q fallita\n", fd);
             UnlockQueue(q);
             return EAGAIN;
         }
     } else if (queue_find(item->opener_q, fd) == NULL) {
         if(queue_push(item->opener_q, fd) != 0) {
-            fprintf(stderr, "fd: %d, push opener_q fallita\n", fd);
+            fprintf(stderr, "🤖  SERVER fd: %d, push opener_q fallita\n", fd);
             UnlockQueue(q);
             return EAGAIN;
         }
@@ -299,13 +316,13 @@ int queue_s_updateOpeners(StorageQueue_t *q, char *pathname, bool locked, int fd
     UnlockQueue(q);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_openFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_openFile errore\n");
         return -1;
     }
     
@@ -341,32 +358,30 @@ int queue_s_readFile(StorageQueue_t *q, char *pathname, int fd) {
     } 
 
     msg_response_t res; // messaggio risposta al client
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = item->len;
     strcpy(res.pathname, item->pathname); //superfluo
 
     //invio messaggio al client
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_readFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_readFile errore\n");
 
         UnlockQueue(q);
         return -1;
     }
 
     if (writen(fd, item->data, res.datalen) != res.datalen) {
-        //TODO gestione errore
-        close(fd); //TODO gestire nel client
-        printf("writen data queue_s_readFile errore\n");
+        close(fd);
+        if (config.v > 1) printf("🤖  SERVER: writen data queue_s_readFile errore\n");
         fflush(stdout);
 
         UnlockQueue(q);
         return -1;
     }
 
-    printf("Letto (ed inviato) file %s, di lunghezza %d\n", item->pathname, item->len);
-    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
+    if (config.v > 1) printf("🤖  SERVER: Letto (ed inviato) file %s, di lunghezza %d\n", item->pathname, item->len);
     fflush(stdout);
 
     UnlockQueue(q);
@@ -376,6 +391,7 @@ int queue_s_readFile(StorageQueue_t *q, char *pathname, int fd) {
 
 int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
     msg_response_t res; // messaggio risposta al client
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
 
     if ((q == NULL) || (pathname == NULL)) { 
@@ -387,13 +403,13 @@ int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
     if (q->cur_numfiles < n || n <= 0) res.datalen = q->cur_numfiles;
     else res.datalen = n;
 
-    printf("Numero di files che verranno inviati: %d\n", res.datalen);
+    if (config.v > 1) printf("🤖  SERVER: Numero di files che verranno inviati: %d\n", res.datalen);
 
     // invio messaggio al client
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_readFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_readFile errore\n");
+        fflush(stderr);
 
         UnlockQueue(q);
         return -1;
@@ -408,27 +424,25 @@ int queue_s_readNFiles(StorageQueue_t *q, char *pathname, int fd, int n) {
 
         //invio messaggio al client
         if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-            close(fd); //TODO gestire nel client
-            printf("writen res queue_s_readFile errore\n");
-            fflush(stdout);
+            close(fd);
+            fprintf(stderr, "🤖  SERVER: writen res queue_s_readFile errore\n");
+            fflush(stderr);
 
             UnlockQueue(q);
             return -1;
         }
 
         if (writen(fd, temp->data, res.datalen) != res.datalen) {
-            //TODO gestione errore
-            close(fd); //TODO gestire nel client
-            printf("writen data queue_s_readFile errore\n");
-            fflush(stdout);
+            close(fd);
+            fprintf(stderr, "🤖  SERVER: writen data queue_s_readFile errore\n");
+            fflush(stderr);
 
             UnlockQueue(q);
             return -1;
         }
 
 
-        printf("Letto (ed inviato) file %s, di lunghezza %d\n", temp->pathname, temp->len);
-        printf("Contenuto: %s\n", temp->data + '\0'); //TODO togliere
+        if (config.v > 1) printf("🤖  SERVER: Letto (ed inviato) file %s, di lunghezza %d\n", temp->pathname, temp->len);
         fflush(stdout);
 
         temp = temp->next;
@@ -448,7 +462,6 @@ int queue_s_writeFile(StorageQueue_t *q, char *pathname, int fd, void *buf, int 
     }
 
     StorageNode_t *item;
-    void *data = NULL;
 
     LockQueue(q);
     if ((item = queue_s_find(q, pathname)) == NULL) {
@@ -483,7 +496,7 @@ int queue_s_writeFile(StorageQueue_t *q, char *pathname, int fd, void *buf, int 
     if (tmp == NULL) {
         UnlockQueue(q);
 
-        fprintf(stderr, "fd: %d, queue_s_writeToFile malloc fallita\n", fd);
+        fprintf(stderr, "🤖  SERVER fd: %d, queue_s_writeToFile malloc fallita\n", fd);
         return ENOMEM;
     } 
 
@@ -492,8 +505,7 @@ int queue_s_writeFile(StorageQueue_t *q, char *pathname, int fd, void *buf, int 
     item->len = buf_len;
     item->data = tmp;
 
-    printf("Scritto il file %s, per una lunghezza di %d\n", item->pathname, item->len);
-    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
+    if (config.v > 1) printf("🤖  SERVER: Scritto il file %s, per una lunghezza di %d\n", item->pathname, item->len);
     fflush(stdout);
 
     q->cur_usedstorage += item->len;
@@ -513,13 +525,14 @@ int queue_s_writeFile(StorageQueue_t *q, char *pathname, int fd, void *buf, int 
     }
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_writeFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_writeFile errore\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -534,7 +547,6 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
     }
 
     StorageNode_t *item = NULL;
-    void *data = NULL;
 
     LockQueue(q);
     if ((item = queue_s_find(q, pathname)) == NULL) {
@@ -543,7 +555,7 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
     }
 
     if (queue_find(item->opener_q, fd) == NULL) {
-        printf("item->opener_q == NULL ? %d\n", (item->opener_q == NULL));
+        if (config.v > 2) printf("🤖  SERVER: item->opener_q == NULL ? %d\n", (item->opener_q == NULL));
         fflush(stdout);
         UnlockQueue(q);
         return EPERM;
@@ -564,7 +576,7 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
     if (tmp == NULL) {
         UnlockQueue(q);
 
-        fprintf(stderr, "fd: %d, queue_s_appendToFile realloc fallita\n", fd);
+        fprintf(stderr, "🤖  SERVER fd: %d, queue_s_appendToFile realloc fallita\n", fd);
         return ENOMEM;
     } 
 
@@ -573,8 +585,7 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
     item->data = tmp;
     item->len += buf_len;
 
-    printf("Append sul file %s, lunghezza attuale di %d\n", item->pathname, item->len);
-    printf("Contenuto: %s\n", item->data + '\0'); //TODO togliere
+    if (config.v > 1) printf("🤖  SERVER: Append sul file %s, lunghezza attuale di %d\n", item->pathname, item->len);
     fflush(stdout);
 
     q->cur_usedstorage += buf_len;
@@ -592,13 +603,14 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
     }
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_appendToFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_appendToFile errore\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -618,9 +630,12 @@ int queue_s_lockFile(StorageQueue_t *q, char *pathname, int fd) {
         return ENOENT;
     }
 
-    while (item->locked && item->fd_locker != fd) {
-        printf("queue_s_lockFile, fd: %fd, file: %s locked, aspetto...\n");   
+    while (item->locked && item->fd_locker != fd && status != CLOSED) {
+        if (config.v > 2) printf("🤖  SERVER: queue_s_lockFile, fd: %d, file: %s locked, aspetto...\n", fd, pathname);   
         UnlockQueueAndWait(q, item);
+    }
+    if (status == CLOSED) {
+        return ENETDOWN;
     }
 
     if (queue_find(item->opener_q, fd) == NULL) {
@@ -635,13 +650,14 @@ int queue_s_lockFile(StorageQueue_t *q, char *pathname, int fd) {
     UnlockQueue(q);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_lockFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_lockFile errore\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -679,13 +695,14 @@ int queue_s_unlockFile(StorageQueue_t *q, char *pathname, int fd) {
     UnlockQueueAndSignal(q, item);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_writeFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_writeFile errore\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -711,7 +728,7 @@ int queue_s_closeFile(StorageQueue_t *q, char *pathname, int fd) {
         UnlockQueue(q);
         return EPERM;
     } else if (esito == 1) { //è andata bene la delete (fd era l'ultimo opener)
-        printf("deleteNode OK (ed fd era l'ultimo opener)\n");
+        if (config.v > 2) printf("🤖  SERVER: deleteNode OK (ed fd era l'ultimo opener)\n");
         item->opener_q = NULL;
     }
 
@@ -724,13 +741,14 @@ int queue_s_closeFile(StorageQueue_t *q, char *pathname, int fd) {
     UnlockQueue(q);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_closeFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_closeFile errore\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -827,14 +845,15 @@ int queue_s_removeFile(StorageQueue_t *q, char *pathname, int fd) {
     UnlockQueue(q);
 
     msg_response_t res;
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = 0;
 
 
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res queue_s_deleteFile errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res queue_s_deleteFile errore\n");
+        fflush(stderr);
         return -1;
     }
     return 0;
@@ -849,7 +868,7 @@ void queue_s_printListFiles(StorageQueue_t *q) {
     StorageNode_t *curr = q->head;
 
     while(curr != NULL) {
-        printf("%s\n", curr->pathname);
+        printf("🤖  SERVER: %s\n", curr->pathname);
         fflush(stdout);
 
         curr = curr->next;
@@ -880,7 +899,7 @@ StorageNode_t* queue_s_find(StorageQueue_t *q, char *pathname) {
     StorageNode_t *found = NULL;
 
     while(found == NULL && curr != NULL) {
-        printf("queue_s_find, locked: %d, fd: %d, cwrite: %d, pathname: %s\n", curr->locked, curr->fd_locker, curr->locker_can_write, curr->pathname);
+        if (config.v > 2) printf("🤖  SERVER: queue_s_find, locked: %d, fd: %d, cwrite: %d, pathname: %s\n", curr->locked, curr->fd_locker, curr->locker_can_write, curr->pathname);
         fflush(stdout);
         
         if (strcmp(curr->pathname, pathname) == 0) {
@@ -967,43 +986,42 @@ int queue_s_popUntil(StorageQueue_t *q, int buf_len, int *num_poppedFiles, Stora
 int send_to_client_and_free(int fd, int num_files, StorageNode_t *poppedH) {
     StorageNode_t *temp = NULL;
     msg_response_t res; // messaggio risposta al client
+    memset(&res, '\0', sizeof(msg_response_t));
     res.result = 0;
     res.datalen = num_files;
 
     // invio messaggio al client (quanti files riceverà)
     if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-        close(fd); //TODO gestire nel client
-        printf("writen res send_to_client_and_free errore\n");
-        fflush(stdout);
+        close(fd);
+        fprintf(stderr, "🤖  SERVER: writen res send_to_client_and_free errore\n");
+        fflush(stderr);
         queue_s_deleteNodes(poppedH);
         return -1;
     }
 
-    printf("Numero di files in espulsione: %d\n", num_files);    
+    if (config.v > 1) printf("🤖  SERVER: Numero di files in espulsione: %d\n", num_files);    
 
     while(poppedH != NULL) {
         temp = poppedH;
         res.datalen = temp->len;
         strcpy(res.pathname, temp->pathname);
 
-        printf("Espulso file %s, di lunghezza %d\n", temp->pathname, temp->len);
-        printf("Contenuto: %s\n", temp->data + '\0'); //TODO togliere
+        if (config.v > 1) printf("🤖  SERVER: Espulso file %s, di lunghezza %d\n", temp->pathname, temp->len);
         fflush(stdout);
 
         if (writen(fd, &res, sizeof(res)) != sizeof(res)) {
-            close(fd); //TODO gestire nel client
-            printf("writen res send_to_client_and_free errore\n");
-            fflush(stdout);
+            close(fd);
+            fprintf(stderr, "🤖  SERVER: writen res send_to_client_and_free errore\n");
+            fflush(stderr);
             queue_s_deleteNodes(poppedH);
             return -1;
         }
 
         if (res.datalen > 0) {
             if (writen(fd, temp->data, res.datalen) != res.datalen) {
-                    //TODO gestione errore
-                close(fd); //TODO gestire nel client
-                printf("writen data send_to_client_and_free errore\n");
-                fflush(stdout);
+                close(fd);
+                fprintf(stderr, "🤖  SERVER: writen data send_to_client_and_free errore\n");
+                fflush(stderr);
                 queue_s_deleteNodes(poppedH);
                 return -1;
             }

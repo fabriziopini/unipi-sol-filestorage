@@ -4,9 +4,12 @@
 #include <errno.h>
 #include <pthread.h>
 
-// TODO negli esercizi erano scritte < > , non " "
 #include "util.h"
 #include "queue.h"
+#include "config.h"
+
+extern struct config_struct config;
+
 
 /**
  * @file queue.c
@@ -41,12 +44,12 @@ Queue_t *queue_init() {
     q->qlen = 0;
 
     if (pthread_mutex_init(&q->qlock, NULL) != 0) {
-        perror("mutex init");
+        perror("🤖  SERVER: mutex init");
         return NULL;
     }
 
     if (pthread_cond_init(&q->qcond, NULL) != 0) {
-	    perror("mutex cond");
+	    perror("🤖  SERVER: mutex cond");
 
         if (&q->qlock) pthread_mutex_destroy(&q->qlock);
            
@@ -120,16 +123,16 @@ int queue_pop(Queue_t *q) {
 Node_t* queue_find(Queue_t *q, int fd) {
     if (q == NULL) {
         errno= EINVAL; 
-        return -1;
+        return NULL;
     }
     LockQueue(q);
     Node_t *curr = q->head;
     Node_t *found = NULL;
 
-    printf("queue_find fd:%d, in opener_q\n", fd);
+    if (config.v > 2) printf("🤖  SERVER: queue_find fd:%d, in opener_q\n", fd);
 
     while(found == NULL && curr != NULL) {
-        printf("fd: %d\n", curr->data);
+        if (config.v > 2) printf("🤖  SERVER: fd: %d\n", curr->data);
         if (fd == curr->data) {
             found = curr;
         } else {

@@ -3,34 +3,27 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <limits.h>
 #include "common_def.h"
 #include "queue.h"
 
-#define MAX_NAME_LENGTH 256
-
-// TODO ricordarsi di scrivere che sto poppando file, fregandomene del fatto che potrebbero essere locked
-
-
-/** Elemento della coda.
+/** Elemento della coda storage
  *
  */
 typedef struct StorageNode {
-    char 	        pathname[MAX_NAME_LENGTH];	// nome completo del file (univoco nello storage)
+    char 	        pathname[PATH_MAX];	// nome completo del file (univoco nello storage)
 	void* 	        data;	    // dati del file
 	int  	        len;		// lunghezza del file
 	bool	        locked;		// flag di lock da client
 	int	            fd_locker;	// fd del processo client che ha fatto lock
     bool            locker_can_write; // true se l'ultima operazione fatta dal locker è una open con create_lock
-    Queue_t         *opener_q;  // TODO quando un client esce, devo scorrere tutti i nodi della coda, e di ciascun nodo scorrere questa coda (opener) per togliere il client (se c'è)
-                                    // E' molto costoso, però va bene così se presuppongo che:
-                                    //     il mio serverStorage ha come scopo servire POCHI client (o comunque che condividono pochi file tra di loro) che mettono tanti file a testa (quindi il peso di scorrere le liste dei client è limitato, rispetto allo scorrere le liste dei file per ogni operazione)
-                                    //     e che i client facciano varie operazioni, mentre l'uscita è un evento raro
+    Queue_t         *opener_q;  // coda dei client (fd) che hanno aperto il file
     pthread_cond_t  filecond;   // locked && fd_locker != fd
 	struct StorageNode* next;
 } StorageNode_t;
 
 
-/** Struttura dati coda.
+/** Struttura dati coda storage
  *
  */
 typedef struct StorageQueue {
@@ -62,6 +55,12 @@ typedef struct StorageQueue {
 StorageQueue_t *queue_s_init(int limit_num_files, unsigned long storage_capacity);
 
 
+/** Sblocca tutti i thread bloccati su le wait
+ * 
+ *   \param q puntatore alla coda
+ */
+void queue_s_broadcast(StorageQueue_t *q);
+
 /** Cancella una coda allocata con initQueue. Deve essere chiamata
  *  da un solo thread (tipicamente il thread main).
  *  
@@ -89,6 +88,7 @@ int queue_s_push(StorageQueue_t *q, char *pathname, bool locked, int fd_locker);
 /** Aggiorna gli opener del nodo, (file) della coda ,identificato da pathname
  *  (inizializzando correttamente i vari campi), ed in caso di successo comunica
  *  al client sul socket fd_locker
+ *  (se un altro client ha il lock su quel file, aspetta (wait))
  * 
  *   \param q puntatore alla coda
  *   \param pathname del file
@@ -164,7 +164,7 @@ int queue_s_appendToFile(StorageQueue_t *q, char *pathname, int fd, void *buf, i
 
 /** Cerca di prendere il lock (cioè fd_locker = fd) sul node (file) idetificato da pathname,
  *  in caso di successo comunica al client sul socket fd
- *  //TODO al momento fallisce subito, fare wait
+ *  (se un altro client ha il lock su quel file, aspetta (wait))
  * 
  *   \param q puntatore alla coda
  *   \param pathname del file

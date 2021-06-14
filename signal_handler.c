@@ -12,12 +12,16 @@
 #include <signal.h>
 #include <pthread.h>
 #include "signal_handler.h"
+#include "config.h"
+
+extern struct config_struct config;
+
 
 // Thread che gestisce i segnali (cambia lo stato del server, inoltre tramite pipe (chiudendola) sveglia il server nel caso fosse bloccato su select)
 void *SignalHandler(void *arg) {
     signalThreadArgs_t *puntatore = (signalThreadArgs_t*) arg;
 
-    fprintf (stdout," #%d: ## signal thread partito ##\n",getpid());
+    fprintf(stdout," #%d: ## signal thread partito ##\n",getpid());
 
     server_status * status = puntatore->status;
     int pfd_w = puntatore->pfd_w;
@@ -25,6 +29,7 @@ void *SignalHandler(void *arg) {
     /* costruisco la maschera */
     sigset_t set;
     int sig;
+    sigemptyset(&set);
     sigaddset(&set, SIGINT);
 	sigaddset(&set, SIGQUIT);
 	sigaddset(&set, SIGHUP);
@@ -37,16 +42,16 @@ void *SignalHandler(void *arg) {
 
         switch (sig) {
             case SIGINT:
-                printf("SignalHandler: Ricevuto SigInt\n");
+                if (config.v > 1) printf("🤖  SERVER: SignalHandler: Ricevuto SigInt\n");
                 fflush(stdout);
                 *status = CLOSED;
                 break;
             case SIGQUIT:
-                printf("SignalHandler: Ricevuto SigQuit\n");
+                if (config.v > 1) printf("🤖  SERVER: SignalHandler: Ricevuto SigQuit\n");
                 *status = CLOSED;
                 break;
             case SIGHUP:
-                printf("SignalHandler: Ricevuto SigHup\n");
+                if (config.v > 1) printf("🤖  SERVER: SignalHandler: Ricevuto SigHup\n");
                 *status = CLOSING;
                 break;
             default:
@@ -65,14 +70,16 @@ pthread_t createSignalHandlerThread(signalThreadArgs_t *signalArg) {
 	sigfillset(&set);	
     /* blocco tutti i segnali prima dell'avvio del signal handler  */
     
-    if (sigprocmask(SIG_BLOCK, &set, NULL) == -1)
-        perror("Err: signal_set");
+    if (sigprocmask(SIG_BLOCK, &set, NULL) == -1) {
+        perror("🤖  SERVER:❌ ERRORE signal_set (SignalHandler");
+        return NULL;
+    }
 
 
     /* signal handler thread */
     pthread_t tid;
     if(pthread_create(&tid, NULL, SignalHandler, signalArg) != 0) {
-        fprintf(stderr, "pthread_create failed (SignalHandler)\n");
+        fprintf(stderr, "🤖  SERVER: ❌ ERRORE pthread_create failed (SignalHandler)\n");
         return NULL;
     }
 

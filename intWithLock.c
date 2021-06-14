@@ -8,10 +8,12 @@ IntWithLock_t *initIntWithLock() {
 
     if (!iwl) return NULL;
 
+    memset(iwl, '\0', sizeof(IntWithLock_t));     
+
     iwl->total_clients = 0;
 
     if (pthread_mutex_init(&(iwl->tc_lock), NULL) != 0) {
-	    perror("mutex init");
+	    perror("🤖  SERVER: mutex init");
 	    return NULL;
     }
 
@@ -21,9 +23,9 @@ IntWithLock_t *initIntWithLock() {
 void deleteIntWithLock(IntWithLock_t *iwl) {
     if (iwl == NULL) return;
 
-    free(iwl);
-
     if (&(iwl->tc_lock))  pthread_mutex_destroy(&(iwl->tc_lock));
+
+    free(iwl);
 }
 
 void addClient(IntWithLock_t *iwl){

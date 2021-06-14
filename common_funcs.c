@@ -49,7 +49,7 @@ ssize_t writen(int fd, void *ptr, size_t n) {
  * 
  *  \retval stringa contenente il nome del file
  */
-char *getFileName(const char *path)
+char *getFileName(char *path)
 {
     char *filename = strrchr(path, '\/'); // \\ su windows
     if (filename == NULL)
@@ -62,9 +62,8 @@ char *getFileName(const char *path)
 
 int createWriteInDir (char *pathname, void *buf, size_t size, char *dirname) {
 
-    printf("CreateWriteDir\n");
     char *filename = getFileName(pathname);
-    int len = strlen(filename) + strlen(dirname) + 1;
+    int len = strlen(filename) + strlen(dirname) + 2;
     char *final_pathname = malloc(len);
     if (final_pathname == NULL) return -1;
 
@@ -72,28 +71,19 @@ int createWriteInDir (char *pathname, void *buf, size_t size, char *dirname) {
     strcat(final_pathname,"/");
     strcat(final_pathname, filename);
 
-    printf("pathname: %s\n",final_pathname);
-    fflush(stdout);
-
     int fd = open(final_pathname, O_WRONLY|O_CREAT|O_TRUNC, 0666); // file descriptor
     free(final_pathname);
     if (fd == -1) {
-        perror("s.c, in apertura (creazione)");
         return -1;
     }
 
     if (write(fd, buf, size) == -1) {
-        perror("s.c: write"); 
         return -1;
     }
 
     if (close(fd) == -1) {
-        perror("s.c: close");
         return -1;
     }
-
-    printf("fine createwriteDir\n");
-    fflush(stdout);
 
     return 0;
 }
